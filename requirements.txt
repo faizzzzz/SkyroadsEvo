@@ -1,0 +1,5 @@
+numpy
+pygame-ce
+mss
+opencv-python
+neat-python

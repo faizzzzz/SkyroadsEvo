@@ -1,0 +1,18 @@
+.venv/
+runs/
+__pycache__/
+bridge/calibration.json
+game/dosbox/
+game/downloads/
+game/skyroads/
+bridge/road_palettes.json
+
+# third-party port (clone it yourself, see README) and anything built from it
+ext/skyroads-sdl/
+ext/skyenv/*.dll
+ext/skyenv/*.o
+
+# recordings and scratch output
+*.mp4
+*.avi
+*.pyc

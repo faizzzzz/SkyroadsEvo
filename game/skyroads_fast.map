@@ -1,0 +1,8 @@
+key_up "key 82"
+key_down "key 81"
+key_left "key 80"
+key_right "key 79"
+key_space "key 44"
+key_enter "key 40"
+key_esc "key 41"
+hand_speedlock "key 68"
