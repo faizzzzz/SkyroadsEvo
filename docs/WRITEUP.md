@@ -1,295 +1,230 @@
 # Teaching a Neural Network to Play Skyroads with Evolution
 
-Skyroads is a 1993 DOS game where you fly a ship down a road floating in space. You steer, speed up, slow
-down and jump over holes and blocks, and every road ends in a tunnel you have to drive into. I wanted to see
-if an evolutionary algorithm could learn to play it, the same way SethBling's MarIO learned Super Mario World.
-No gradient descent, no copying human play. Just breed the networks that fly furthest and let mutation do
-the rest.
+Skyroads is a DOS game from 1993. You fly a ship down a road floating in space, and you steer, speed up, slow
+down and jump over holes and blocks. Every road ends in a tunnel, and you have to drive into it to finish. I
+wanted to see if an evolutionary algorithm could learn to play it, the same way SethBling's MarIO learned to play
+Super Mario World. There is no gradient descent and no training on human play. The pilots that fly the furthest
+get to breed, and mutation and crossover take care of the rest.
 
-I built this over four days (10 to 13 November 2026), with Claude Code writing most of the code while I
-directed it. This write-up covers what we tried, what broke, what fixed it, and where it stands now.
+I worked on this over four days, from 10 to 13 November 2026. Claude Code wrote most of the code while I directed
+it, tested it and decided what to try next. This write-up goes through the approach, what went wrong, what fixed
+it and where it stands now.
 
-## The Goal
+## Goal
 
-One pilot that can finish Roads 1 to 3, and ideally all 30 roads.
-
-The rules I set:
-
-- Learning happens through evolution only: selection, mutation and crossover. Shaping the task is fine
-  (practice starts, extra inputs, reward terms). Hand-coding the behaviour or training on human play is not.
-- The game runs from my own copy, unmodified. Skyroads is freeware, but none of its files are in this repo.
-- No rebuilding the real levels inside a custom simulator.
+The goal was to evolve one pilot that can finish Roads 1 to 3, and ideally all 30 roads. I set a few rules at the
+start. Learning had to happen through evolution only, so selection, mutation and crossover. Shaping the task was
+allowed, like adding inputs, practice starts and reward terms, but hand-coding the behaviour was not. The game would
+run from my own copy without modifying it. Skyroads is freeware, but none of its files are in this repo. I also
+decided not to recreate the real levels inside a custom simulator.
 
 ## The Pilot
 
-Each pilot is a NEAT network (neat-python). It starts tiny, with a few random links from inputs to outputs
-and no hidden neurons, and NEAT adds links and neurons over time.
+Each pilot is a NEAT network, using the neat-python library. A network starts very small, with a few random links
+from the inputs to the outputs and no hidden neurons. NEAT adds links and neurons over time as they help.
 
-**Inputs (165):**
+The pilot gets 165 inputs. Most of them are a grid of the road ahead: 13 lanes centred on the ship by 11 distance
+bands, covering every row up to 20 rows ahead. Each cell is a hole, road, tunnel or block. On top of that, the pilot
+gets how far ahead each lane stays clear, its position and speed, its height above the road, the road's gravity, and
+how close the end of the road is.
 
-- **Road grid (143):** 13 lanes centred on the ship by 11 distance bands, covering every row up to 20 ahead.
-  Each cell is a hole (-1), road (0), tunnel (0.5) or block/deadly tile (1).
-- **Clear path (15):** for each lane, how far ahead it stays clear, plus which way the best lane is.
-- **Ship state (5):** position in the lane, position across the road, speed, height and gravity.
-- **Road end (2):** how close the end of the road is, and where the final tunnel is.
+There are 3 outputs: steer, throttle and jump. Steering is proportional, so the size of the output decides how often
+the key is held down. This lets the pilot make small corrections on narrow parts of the road.
 
-**Outputs (3):** steer, throttle and jump. Steering is proportional, so the size of the output sets how often
-the key is held. That lets the pilot make small corrections on narrow strips.
+Each flight is scored as 1000 × progress + 500 × end approach + 1000 × finished. Progress only counts while the ship
+is at road level, and it stops at 99% unless the road is actually finished. The end approach score is the share of
+the last 5 rows that the ship spends on the ground in the tunnel's lane.
 
-**Score per flight:** `1000 × progress + 500 × end approach + 1000 × finished`. Progress only counts while the
-ship is at road level, and is capped at 99% unless the road is actually finished. End approach is the share of
-the last 5 rows spent on the ground in the tunnel's lane.
+## Starting with a Simulator
 
-## Attempt 1: A Simulator of My Own
+I started with a simulator of our own called Starlane. It has similar mechanics to Skyroads, with 7 lanes, holes,
+blocks, special tiles, fuel and oxygen, but its levels are randomly generated. A generation of 200 pilots flying 16
+levels took about 3.5 seconds.
 
-To start, we built Starlane, an original simulator with similar mechanics: 7 lanes, holes, low and tall blocks,
-special tiles, fuel and oxygen, and randomly generated levels. A generation of 200 pilots flying 16 levels
-took about 3.5 seconds.
+For a base case, I evolved a fixed network with a genetic algorithm and with an evolution strategy. I tested the
+results on 40 easy levels that the pilots had never seen:
 
-For a base case, we evolved a fixed network (inputs → 32 → 16 → 3) with a genetic algorithm and with an
-evolution strategy. Results on 40 easy levels the pilots had never seen:
+- Genetic algorithm - 12/40
+- Evolution strategy, step 0.05 - 7/40
+- Evolution strategy, step 0.02 - 8/40
 
-| Method | Levels won |
-|---|---|
-| Genetic algorithm | 12/40 |
-| Evolution strategy, step 0.05 | 7/40 |
-| Evolution strategy, step 0.02 | 8/40 |
+Next, I switched to NEAT, which won 18 to 19 out of 40 with networks of about 19 links instead of 10,000 weights. It
+was better, but every method stopped improving at about the same point. When I replayed the crashes, I found that the
+pilots had learned to hold full throttle and jump all the time. Hopping clears holes and low blocks without any
+effort, so it scores well, but it does not get the ship through walls. To steer into a gap, the network has to compare
+its left and right side, and small mutations rarely find that.
 
-Switching to NEAT got 18 to 19 out of 40, using about 19 links instead of 10,000 weights. Better, but every
-method stalled at the same place.
+The fix was to give the pilots better inputs. I added a clear path input for each lane, which says how far ahead that
+lane stays clear. With these inputs, the best pilot went from 19/40 to 30/40, and it was the first pilot to move up the
+difficulty levels. Since all three algorithms got stuck at the same score, the problem was what the pilots could see,
+not the algorithm.
 
-Replaying the crashes showed why. The pilots had learned to hold full throttle and jump constantly. Bunny
-hopping clears holes and low blocks for free, so it scores well, but it can't get through walls. Steering
-into a gap needs the network to compare its left and right sides, and small mutations rarely find that.
+## Moving to the Real Game
 
-The fix was better inputs. I added clear-path features: for each lane, how far ahead it stays clear. With
-those, the best vision pilot went from 19/40 to 30/40 and was the first to climb the difficulty levels.
+When I tried the simulator pilot on the real game in DOSBox, it lasted about 6 seconds on Road 1. The physics were
+different, reading the road from screen colours only worked on one road, and a ship inside a tunnel looked the same as
+a crash. So I moved the training onto the real game itself, running 6, then 12, then 18 DOSBox windows at the same time.
 
-**Lesson:** when every algorithm gets stuck at the same score, the problem is the inputs, not the algorithm.
+MarIO read the game's memory to get its inputs, so I did the same. The trainer reads the running game's memory, without
+writing to it, to get the ship's position, height, speed and the road cells ahead. This gave exact falls, crashes and
+finishes. While watching it, I noticed that every road ends in a tunnel, and the ship has to drive into it at road level
+to finish. Pilots flying off the end of the road had been counted as wins. Entering the tunnel sets the ship's height
+straight to 0, while a fall sinks slowly, so that became the finish signal. I also noticed that some roads have different
+gravity, so each road now gets one standing jump to measure it, and gravity became an input.
 
-## Attempt 2: The Real Game in DOSBox
+The hopping habit came along from the simulator. In the replays, the jump key was held down the whole way over the final
+tunnel. A small penalty for jumping, along with the end approach reward, brought the time spent jumping down from 88% to
+about 13%. I later removed the penalty, because jumping is fine everywhere except the end of the road.
 
-The Starlane pilot lasted about 6 seconds on the real Road 1. The physics were different, reading the road
-from screen colours only worked on one road, and a ship inside a tunnel looked like a crash.
+The next problem was that pilots did not reach the end often enough to learn it. To fix this, I added practice flights.
+The best pilot flies the road, and each new pilot takes over 12 rows before the end. Within 5 generations, 4 out of 40
+pilots were finishing the road for real. The first pilot to finish a whole road on its own came at generation 107.
+Roads 2 and 3 were still stuck at 18% and 25%, so I moved the takeover point to just before wherever the furthest pilot
+got stuck. That way, practice always happens at the spot the population needs to learn next.
 
-So we moved training onto the real game, running in 6, then 12, then 18 DOSBox windows at once.
+There were other issues along the way. The lane mapping was off by almost half a lane, so pilots were wrong about which
+lane they were in about half the time. After fixing it, tunnel entries went from about 45 to about 250 per generation.
+Results were also noisy, and the same pilot could finish one flight and crash the next. Syncing the pilot's decisions to
+the game's own updates helped, but real time play stayed noisy, and with only 40 pilots, selection was partly luck.
 
-### Reading the game's memory
+It was also slow. Faster screen capture, one process per window, DOSBox fast forward and shorter menu waits brought a
+generation from about 240 seconds down to about 85, which is still only about 42 generations an hour. Road 1 was
+finished many times. Road 2 was finished once in a practice flight, and it showed up as completed in the game's road
+menu. Neither was reliable.
 
-MarIO read the game's RAM, so we did the same. The trainer reads the running game's memory (read only) for the
-ship's position, height, speed and the road cells ahead. That gave exact falls, crashes and finishes.
+## A Simulator Matched to the Game
 
-Two things I pointed out made a big difference:
+With access to the game's memory, I could measure the real physics and build a simulator that matched them. Top speed
+was 6.03 rows per second in both, it took 4.10 seconds to reach top speed in the game and 4.07 in the simulator, and the
+jump height and time in the air matched as well. This simulator used its own generated roads and trained about 60 times
+faster.
 
-- **Every road ends in a tunnel, and you have to drive into it at road level to finish.** Until then, pilots
-  flying off the end of the road were being counted as wins. Entering the tunnel snaps the ship's height straight
-  to 0, while a fall sinks slowly, so that became the finish signal.
-- **Some roads have different gravity.** Each road now gets one standing jump to measure it, and gravity became
-  an input.
+However, the pilots trained in it did not do well on the real game. The best one reached 54% of Road 1 and never
+finished it. Varying the physics, adding harder practice courses and swapping pilots between the simulator and the real
+game did not close the gap. Small differences in collisions, tile edges and timing all mattered, and matching them by
+hand did not have an end.
 
-### What went wrong, and what fixed it
+## Using an Open Source Port
 
-- **The hopping came along from the simulator.** Replays showed the jump key held the whole way over the final
-  tunnel. A small jump penalty plus the end approach reward dropped jump time from 88% to about 13%. Later I
-  removed the penalty, since jumping is fine everywhere except the end.
-- **Nobody reached the end often enough to learn it.** So we added practice: the best pilot flies the road, and
-  each new pilot takes over 12 rows before the end. Within 5 generations, 4 of 40 were finishing for real.
-  The first pilot to finish a whole road on its own came at generation 107.
-- **Roads 2 and 3 were stuck at 18% and 25%.** Practice only covered the ending. Moving the takeover point to
-  just before wherever the furthest pilot got stuck fixed that, because practice moved with the population.
-- **The lane mapping was off by almost half a lane.** Pilots were wrong about which lane they were in about half
-  the time. After the fix, tunnel entries went from about 45 to about 250 per generation.
-- **Results were noisy.** The same pilot could finish one flight and crash the next. Syncing decisions to the
-  game's own updates helped, but real time play stayed noisy, and with only 40 pilots, selection was partly luck.
-- **It was slow.** Faster screen capture, one process per window, DOSBox fast forward and shorter menu waits took
-  a generation from about 240 seconds down to about 85. That's still only about 42 generations an hour.
+Eventually, I found skyroads-sdl (https://github.com/pedrocatalao/skyroads-sdl), an open source port that runs the
+game's own freeware data with a rewrite of its game logic. I cloned it without changes and wrote a small C driver,
+`ext/skyenv/sky_env.c`, that runs the game loop without a window. Once per frame, it sends the ship's state to Python and
+gets back the keys to press.
 
-Road 1 got finished many times. Road 2 was finished once, in a practice flight, and the game's road menu showed
-it. Neither was reliable.
+A full flight takes about 20 milliseconds, compared to about 10 seconds in DOSBox. That is roughly 500 to 1000 times
+faster, with the game's own physics and finish rule. I checked the port against DOSBox for speed, jump height and lane
+positions, and I set up a viewer that flies the same pilot in both games side by side.
 
-## Attempt 3: A Simulator Matched to the Real Game
+## Training in the Port
 
-With memory access, we could measure the real physics and build a simulator that matched them:
+In the port, each generation has 500 pilots. Each pilot flies every unlocked road once, along with practice flights
+that start along each road and near its end. Fitness ranks each road and practice point separately, and then combines
+them as 0.6 × the average + 0.4 × the worst road + 0.25 × the practice average. Training starts on Road 1 only. The next
+road unlocks when half of the top 20 pilots finish every unlocked road for 5 generations in a row, and roads that are
+already learned give a bonus for finishing them.
 
-| Measurement | Real game | Matched sim |
-|---|---|---|
-| Time to top speed | 4.10 s | 4.07 s |
-| Top speed | 6.03 rows/s | 6.03 rows/s |
-| Jump height | 5195 | 5195 |
-| Time in the air | about 0.5 s | 0.50 s |
+At first, I started the port training from the pilots trained in DOSBox. After 170 generations, Road 1 was only finished
+in 1 to 4 out of 400 flights, so I restarted from scratch. The new population reached 83% of Road 1 within 40 seconds.
 
-It trained about 60 times faster, with its own generated roads. But pilots trained in it didn't transfer. The best
-reached 54% of the real Road 1 and never finished it. Varying the physics, adding hard practice courses and
-swapping pilots between the sim and the real game didn't close the gap.
+The next problem was jumping. About 88% of pilots held the jump key down, which gets through most of Road 1 but bounces
+over the final tunnel. Less is more, and sometimes just continuing with the momentum is good enough. A tap to jump mode
+taught them that, and that run learned Road 1, including real finishes in DOSBox. However, it also made jumping itself
+hard to learn. Once I stopped caring about matching the DOSBox timing exactly, I went back to the game's own held jump,
+exact timing and a decision every frame, and the pilots learned much faster.
 
-**Lesson:** every small difference (collisions, tile edges, timing) matters, and matching them by hand never ends.
-
-## Attempt 4: An Open Source Port, Run Headless
-
-Then I found [skyroads-sdl](https://github.com/pedrocatalao/skyroads-sdl), an open source port that runs the game's
-own freeware data with a rewrite of its game logic. We cloned it unchanged and wrote a small C driver
-(`ext/skyenv/sky_env.c`) that runs the game loop with no window. Once per frame it hands the ship's state to Python
-and takes back the keys.
-
-A full flight takes about 20 ms, against about 10 seconds in DOSBox. That's roughly 500 to 1000 times faster, with
-the game's own physics and finish rule. We checked it against DOSBox (speed, jump height, lane positions), and a
-side by side viewer flies the same pilot in both at once.
-
-## Attempt 5: Training in the Port
-
-**Setup:**
-
-- 500 pilots. Each flies every unlocked road once, plus practice takeovers along each road and near the end.
-- Fitness ranks each road and practice point separately, then takes 0.6 × the average + 0.4 × the worst road +
-  0.25 × the practice average.
-- Training starts on Road 1 only. The next road unlocks when half of the top 20 pilots finish every unlocked road,
-  5 generations in a row.
-- Roads already learned get a bonus for finishing them, so they don't get forgotten.
-
-### What went wrong, and what fixed it
-
-**1. Starting from the DOSBox pilots carried their bad habits over.** After 170 generations, Road 1 was finished in
-only 1 to 4 out of 400 flights. Starting from scratch was faster: 83% of Road 1 within 40 seconds.
-
-**2. Holding jump down.** About 88% of pilots held jump, which clears most of Road 1 but bounces over the final
-tunnel. As I put it at the time, less is more, and sometimes just continuing with the momentum is good enough.
-A tap-to-jump mode taught that, and that run mastered Road 1, including real finishes in DOSBox. But it also made
-jumping hard to learn. Once I stopped caring about matching DOSBox timing exactly, going back to the game's own
-held jump, exact timing and a decision every frame learned much faster.
-
-**3. Forgetting.** Adding Road 2 wiped out Road 1. Finishes dropped from about 400 to about 10 over 38 generations.
-A bonus for finishing old roads fixed it. Set too high (5000), it blocked pilots that were making progress on Road 2.
+Adding Road 2 caused the pilots to forget Road 1, and finishes dropped from about 400 to about 10 over 38 generations. A
+bonus for finishing old roads fixed this. When the bonus was 5000, it blocked pilots that were making progress on Road 2.
 At 600, losing Road 1 completely costs more than anything Road 2 can give, but one missed finish can still be made up.
 
-**4. Road 2 finishers that never spread.** From generation 774 to 1409, about 4 out of 500 pilots finished Road 2
-every generation. That never grew, and at generation 1410 the last of them died out. Two reasons:
+From generation 774 to 1409, about 4 out of 500 pilots finished Road 2 every generation, but that number never grew,
+and at generation 1410 the last of them died out. There were two reasons for this. With ranked fitness, finishing the
+road only ranked one place above falling off at 99%. Also, the practice flights were carried by the furthest pilot of the
+current generation, so when the finishers died out, the practice at the end of Road 2 went away with them. I rolled back
+to generation 1100, added a bonus of 400 for finishing the newest road, and kept the furthest pilot ever for practice.
+After that, the finishers survived, but there were still only 4 or 5 of them.
 
-- With ranked fitness, finishing the road ranked one place above falling off at 99%.
-- The practice pilot was the furthest one from the current generation only. When the finishers died out, so did the
-  practice at the end of Road 2.
+To find out why, I took the 4 pilots that finished both roads, bred 60 children from each, and flew them. The results
+were:
 
-We rolled back to generation 1100, added a +400 bonus for finishing the newest road, and kept the furthest pilot
-ever as the practice pilot. The finishers survived after that, but there were still only 4 or 5 of them.
+- Default NEAT mutation, which changes 80% of the weights - 8% still finished both roads
+- Crossover with another pilot and default mutation - 2%
+- Gentle mutation, which changes 10% of the weights by small amounts - 96%
+- Crossover with another pilot and gentle mutation - 29%
+- Crossover between two finishers and gentle mutation - 45%
 
-**5. Mutation was breaking the skill.** To find out why, we took the 4 pilots that finished both roads, bred 60
-offspring from each, and flew them:
+As observed in the results above, the finishers were surviving, but almost none of their children kept the skill. I
+switched to gentle mutation and bred 75% of the children from a single parent. Road 2 finishers went from 6 to 79 within
+5 generations, and Road 3 unlocked at generation 1265. Later, about 470 out of 500 pilots were finishing Road 2.
 
-| How the offspring were made | Still finish both roads |
-|---|---|
-| Default NEAT mutation (80% of weights changed) | 8% |
-| Crossover with another pilot + default mutation | 2% |
-| Gentle mutation (10% of weights, small changes) | 96% |
-| Crossover with another pilot + gentle mutation | 29% |
-| Crossover between two finishers + gentle mutation | 45% |
+Gentle mutation also made the pilots almost identical to each other. All 500 of them hit the same block early on Road 3,
+at row 10 or about 12%, for 155 generations. To bring back variety, I added explorers, which are 20% of the children
+mutated with the old, stronger settings. One of them got past the block right away, but it had lost Roads 1 and 2 along
+the way, so it ranked near the bottom and died out. The explorers also created a lot of species, from 2 to 105, and NEAT
+does not merge species on its own, so the trainer now sorts everyone into species again when the count gets too high.
 
-That explained it. Finishers survived, but almost none of their children kept the skill. Switching to gentle
-mutation, with 75% of children bred from one parent, took Road 2 finishers from 6 to 79 in 5 generations.
-Road 3 unlocked at generation 1265, and Road 2 finishers later reached about 470 out of 500.
+To keep pilots like that explorer alive, I added protected seeds. The 5 pilots that get the furthest on the newest road
+are kept every generation, even if they fail the older roads, along with 25 children bred from them with gentle
+mutation. Road 3 went from 27% to 86% in 4 generations, and the seeds slowly won back Road 1 and most of Road 2.
 
-**6. Everyone became the same pilot.** Gentle mutation made the population near copies of each other. All 500 hit
-the same block early on Road 3 (row 10, about 12%) for 155 generations. 347 drifted right into it and 114 drifted left.
-We added explorers: 20% of children get the old, strong mutation. One of them got past the block straight away.
-But it had lost Roads 1 and 2 along the way, so it ranked near the bottom and died out.
+Then the pilots hit another wall at row 52 of 60. The left lane ends at row 49, and the only way forward is to jump right
+onto a few short lanes in the middle, and then jump again onto a strip on the far right. A pilot that makes the first jump
+and then falls scores the same as a pilot that rides straight off the end, so the pilots that were halfway there kept
+getting thrown out. Nothing changed for 240 generations.
 
-The explorers also caused a side problem. Each one formed its own species, and the count jumped from 2 to 105.
-NEAT never merges species, so we now re-sort everyone into species from scratch when the count gets too high.
-
-**7. Half solutions were getting thrown away.** To keep explorers like that alive, we added protected seeds: the 5
-pilots that get furthest on the newest road are kept every generation, even if they fail older roads, along with 25
-gently mutated children. Road 3 went from 27% to 86% in 4 generations. The seeds also slowly won back Road 1 and
-most of Road 2.
-
-Then it hit a second wall at row 52 of 60. The left lane ends at row 49, and the only way on is to jump right onto
-some short middle lanes, then jump again onto a strip on the far right. A pilot that makes the first jump and then
-falls scores the same as one that rides straight off the end. So the half solution kept getting thrown away, and
-nothing changed for 240 generations.
-
-The fix was stepping stones (the idea behind MAP-Elites). Every flight records the last spot the ship stood on, by
-row and lane. Each spot keeps the best pilot that got there, and the furthest spot in each lane gets planted back
-every generation. A pilot that reaches the middle lanes and falls is now kept, and its children only need to learn the
-second jump. Within 70 generations, the stepping stone in lane 2 moved from row 44 to row 49, and the right side of the
-road was explored for the first time.
+To fix this, I used stepping stones, which is the idea behind MAP-Elites. Every flight records the last spot the ship
+stood on, by row and lane. Each spot keeps the best pilot that got there, and the furthest spot in each lane is planted
+back into the population every generation. A pilot that reaches the middle lanes and then falls is now kept, and its
+children only have to learn the second jump. Within 70 generations, the stepping stone in lane 2 moved from row 44 to row
+49, and pilots reached the right side of the road for the first time.
 
 ## Where It Stands
 
-As of generation 1,870:
-
-| Road | Status |
-|---|---|
-| Road 1 | Learned. About 270 to 490 of 500 pilots finish it every generation |
-| Road 2 | Learned. Up to about 470 of 500 finish it, and the best pilot always does |
-| Road 3 | The best all-round pilot stops at row 10 (12%). The furthest pilot reaches row 52 of 60 (87%), and the stepping stones are closing in on the crossing |
-
-A generation of 500 pilots, each flying 21 times, takes about 30 seconds.
+At generation 1,870, Roads 1 and 2 are learned. About 270 to 490 out of 500 pilots finish Road 1 every generation, up to
+about 470 finish Road 2, and the best pilot always finishes both. On Road 3, the best overall pilot still stops at row 10,
+but the furthest pilot reaches row 52 out of 60, and the stepping stones are getting closer to the crossing. A
+generation of 500 pilots, each flying 21 times, takes about 30 seconds.
 
 ## Conclusion
 
-Comparing the five attempts, the environment made the biggest difference. Real time DOSBox gave about 40 noisy
-generations an hour. The headless port gives exact, repeatable flights about 1000 times faster, so fixes that took hours
-to test took minutes.
+To summarize, the environment made the biggest difference. DOSBox in real time gave about 40 noisy generations an hour,
+while the port gives exact, repeatable flights about 1000 times faster. Fixes that took hours to test in DOSBox took
+minutes in the port. After that, almost every problem was in how the pilots were bred and scored, not in the pilots
+themselves.
 
-After that, almost every problem was in the evolution itself, not the pilot.
+Some lessons from this project:
 
-1. **Get the exact game state and a correct finish signal first.** Screen reading and guessed signals gave false wins
-   and hid the real problems.
-2. **Don't hand-build a simulator of a game you can run.** The matched sim hit every measured number and still didn't
-   transfer. Running the game's own logic did.
-3. **If every algorithm stalls at the same score, fix the inputs.** GA, ES and NEAT all got stuck bunny hopping, and
-   clear-path inputs got them out.
-4. **Ranked fitness hides big jumps.** Finishing a road needs its own bonus, or it's only worth one rank.
-5. **Test mutation directly.** Mutating a skilled pilot and flying the children explained hundreds of stuck generations
-   in a few minutes.
-6. **Keep the skill and keep exploring, separately.** Gentle mutation keeps skills but kills variety. Strong mutation
-   explores but breaks skills. Doing both, plus species control that can merge species, keeps both.
-7. **Distance alone is misleading at multi-step obstacles.** Protected seeds and stepping stones keep half solutions
-   alive long enough to finish them.
-8. **Practice where the population gets stuck.** Start practice from the furthest pilot ever, and leave enough room
-   before the obstacle to set up for it.
-9. **Keep checkpoints.** Every fix reset some of what evolution had settled into, and being able to roll back saved
-   the run more than once.
+- Get the exact game state and a correct finish signal first. Reading the screen and guessing gave false wins and hid
+  the real problems.
+- Do not build your own simulator of a game you can already run. The matched simulator hit every number I measured and
+  still did not work on the real game.
+- If every algorithm gets stuck at the same score, look at the inputs.
+- Ranked fitness hides big jumps like finishing a road, so finishing needs its own bonus.
+- Test mutation directly. Breeding children from a good pilot and flying them explained hundreds of stuck generations in
+  a few minutes.
+- Keep a balance between keeping skills and exploring. Gentle mutation keeps skills but makes every pilot the same, and
+  strong mutation explores but breaks skills.
+- Scoring by distance alone does not work well when an obstacle takes more than one move. Protected seeds and stepping
+  stones keep the pilots that are halfway there.
+- Start practice where the population gets stuck, and leave enough room before the obstacle.
+- Save checkpoints often. Being able to roll back saved the run more than once.
 
-### What's next
+Next, I want to let the stepping stones get through Road 3 and see if they can win back Roads 1 and 2 and unlock Road 4.
+I also want to try breeding the seeds with the pilots that already finish the old roads, since two finishers bred
+together kept the skill 45% of the time. Other ideas are separate pilots for each road that can help when the main run
+gets stuck, turning the DOSBox timing back on once the roads are learned, and novelty search for the hardest spots.
 
-- Let the stepping stones get through Road 3, and see if that line wins Roads 1 and 2 back and unlocks Road 4.
-- Breed seeds with the main population's finishers, since two finishers crossed together kept the skill 45% of the time.
-- Try separate pilots for each road as rescue teams when the main run gets stuck.
-- Turn DOSBox timing back on once roads are learned, so the pilots work on the real game again.
-- Try novelty search for the hard spots, instead of hand-picking what counts as a stepping stone.
+There are some limitations. One pilot has to remember every earlier road while it learns the next one, and the bonuses
+and seeds that make this work were tuned by hand. Training in the port no longer matches the DOSBox timing, so results
+on the real game are mixed. Roads 4 to 30 have not been tried yet. Road 20 has so much gravity that jumping is not
+possible, and fuel and oxygen have not been mapped.
 
-### Limitations
+## Repo Layout
 
-- One pilot has to keep every earlier road while learning the next one. The bonuses and seeds that make this work were
-  tuned by hand.
-- Training in the port no longer matches DOSBox timing, so results on the real game are mixed.
-- The inputs, rewards, practice starts and stepping stones are my design choices. The pilots still only learn through
-  selection and mutation.
-- Roads 4 to 30 haven't been tried. Road 20 has gravity so high that jumping is impossible, and fuel and oxygen
-  limits haven't been mapped yet.
-
-## Appendix: Repo Layout
-
-| Path | What it is |
-|---|---|
-| `starlane/` | The Starlane simulator, the shared inputs (`realobs.py`), the matched sim, and the port wrapper (`portenv.py`) |
-| `bridge/` | DOSBox window control, screen capture, memory reading and live flying |
-| `ext/skyenv/` | The headless driver for the skyroads-sdl port |
-| `train.py`, `train_neat.py` | Attempt 1 trainers |
-| `train_real.py`, `train_realsim.py` | Attempts 2 and 3 trainers |
-| `train_port.py`, `train_forever.ps1` | Attempt 5 trainer, and a script that restarts it if it crashes |
-| `watch_side_by_side.py`, `check_transfer.py` | DOSBox vs port viewer, and an hourly check on the real game |
-
-## Appendix: Current Settings
-
-| Setting | Value |
-|---|---|
-| Population | 500 |
-| Flights | 1 per road, exact timing, held jump, a decision every frame |
-| Practice | 4 evenly spaced takeovers, 2 near the sticking point, and 2 near the end of the road |
-| Fitness | Ranked per road and practice point: 0.6 × average + 0.4 × worst + 0.25 × practice |
-| Bonus for old roads | 600 × share finished |
-| Bonus for the newest road | 400 for finishing |
-| Unlocking | Half of the top 20 finish every road, 5 generations in a row |
-| Mutation | Gentle (10% of weights, small changes), with 20% explorers on the default settings |
-| Breeding | 75% from a single parent |
-| Species | Target 12, re-sorted when over 24 |
-| Seeds | The furthest stepping stone in each lane, plus 25 gentle children |
+- `starlane/` - the Starlane simulator, the shared inputs (`realobs.py`), the matched simulator, and the port wrapper
+  (`portenv.py`)
+- `bridge/` - DOSBox window control, screen capture, memory reading and live flying
+- `ext/skyenv/` - the C driver that runs the skyroads-sdl port without a window
+- `train.py`, `train_neat.py` - training in Starlane
+- `train_real.py`, `train_realsim.py` - training in DOSBox and in the matched simulator
+- `train_port.py`, `train_forever.ps1` - training in the port, and a script that restarts it if it crashes
+- `watch_side_by_side.py`, `check_transfer.py` - the side by side viewer, and an hourly check on the real game
