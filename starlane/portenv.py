@@ -62,6 +62,42 @@ def game_lane(y):
     return int((y - LEFT_BORDER) // SLAB_WIDTH)
 
 
+class RunUp:
+    """A practice carrier: an evolved pilot flies until row `take`, then scripted keys carry the ship
+    through a manoeuvre found by a scripted sweep, so practice can start beyond a spot no pilot has
+    passed yet. It only decides where practice starts; the pilot taking over still flies by itself.
+    plan: take, j1 (row of the first jump), s1 (row to start steering), t1 (lane to steer to; lanes
+    span [k, k+1]), thr (throttle output), and optionally j2 (row of a second jump, steering to t2)."""
+
+    def __init__(self, net, plan):
+        self.net, self.p, self.s = net, plan, None
+        self.last_z, self.target, self.second = GROUND, None, False
+
+    def frame(self, s):
+        self.s = s
+
+    def activate(self, obs):
+        p, s = self.p, self.s
+        row = s.x / 65536.0
+        if row < p["take"]:
+            self.last_z = s.z
+            return self.net.activate(obs)
+        lane = (s.y - LEFT_BORDER) / SLAB_WIDTH
+        ground = s.z == self.last_z and s.z >= GROUND
+        self.last_z = s.z
+        if self.target is None:
+            self.target = lane
+        if row >= p["s1"]:
+            self.target = p["t1"]
+        jump = p["j1"] <= row < p["j1"] + 0.3 and ground
+        if p.get("j2") is not None and row >= p["j2"] and ground and p["t1"] - 0.5 <= lane < p["t1"] + 1.5:
+            self.second = jump = True
+        if self.second:
+            self.target = p.get("t2", 6.5)
+        steer = max(-1.0, min(1.0, (self.target - lane) * 2.0))
+        return [steer, float(p["thr"]), 1.0 if jump else 0.0]
+
+
 class PortEnv:
     """One per process (the game logic keeps global state)."""
 
@@ -125,10 +161,14 @@ class PortEnv:
              "best": 0.0, "best_frame": 0, "tunnels": 0, "was_tunnel": False, "reached": False, "stalled": False}
         origin = START_ROW if carrier is None else handover
 
+        carrier_frame = getattr(carrier, "frame", None)      # a scripted run-up needs the ship state
+
         def policy(sp):
             s = sp.contents
             if on_frame is not None:
                 on_frame(s)
+            if carrier_frame is not None and not m["handed"]:
+                carrier_frame(s)
             pos = s.x / 65536.0
             row = int(pos)
             if not m["handed"] and pos >= handover:

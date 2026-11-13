@@ -33,6 +33,21 @@ from train_real import flight_score, latest_checkpoint, rank_fitness
 
 ROADS = 30
 END_KEY = 1000                  # result keys from here on are end-of-road practice (ranked like roads)
+RUNUP_KEY = -5000               # practice starts carried by a scripted run-up (ranked as practice)
+
+# Scripted run-ups to practice starts beyond spots no pilot has passed yet, per road (0-based), as
+# (practice start row, RunUp plan). Road 3: the left lane ends at row 49 and the road goes on only via
+# short middle lanes (rows 46-49) and a strip on the far right. No pilot landed on the middle lanes in
+# 166 generations, yet a scripted sweep (jump about row 43 steering right, then jump again steering to
+# the far right) finished Road 3 in 4,212 of 10,512 attempts. These starts let pilots learn the second
+# jump and the ending; the first jump they still have to find on full flights.
+# The timings depend on how the evolved pilot arrives at row 40, so each road's run-up keeps the carrier
+# it was swept with (state["runup_carriers"], pinned the first time it's needed) rather than following
+# the best-ever carrier, which changes.
+RUNUPS = {
+    2: [(47, {"take": 40, "j1": 44.0, "s1": 43.5, "t1": 3.5, "thr": 0, "j2": 48.0}),    # on the middle lanes
+        (50, {"take": 40, "j1": 44.0, "s1": 43.5, "t1": 3.5, "thr": 0, "j2": 46.5})],   # on the right strip
+}
 _W = {}
 
 # Mutation test (gen 1241, 4 pilots finishing Roads 1 and 2, 60 offspring each): with the neat.cfg
@@ -107,10 +122,16 @@ def _work(args):
     for gid, genome in pilots:
         net = neat.nn.FeedForwardNetwork.create(genome, cfg)
         res = {}
-        for key, road, handover, seed in jobs:
+        for key, road, handover, seed, *plan in jobs:
             carrier = carrier_nets.get(road) if handover is not None else None
             if handover is not None and carrier is None:
                 continue
+            if plan and plan[0]:
+                from starlane.portenv import RunUp
+                g = plan[0]["carrier"]
+                if _W.get("runup_id") != (id(g), g.key):
+                    _W["runup_id"], _W["runup_net"] = (id(g), g.key), neat.nn.FeedForwardNetwork.create(g, cfg)
+                carrier = RunUp(_W["runup_net"], plan[0])  # stateful: a fresh one for every flight
             res[key] = env.fly(net, road, carrier=carrier, handover_row=handover,
                                seed=seed if play["jitter"] else 0, frame_ticks=play["frame_ticks"],
                                jump=play["jump"])
@@ -184,7 +205,9 @@ def main():
                    help="gentle: small weight changes (GENTLE); cfg: the stronger neat.cfg settings")
     p.add_argument("--single-parent", type=float, default=0.75,
                    help="share of offspring bred from one parent instead of crossover")
-    p.add_argument("--explorers", type=float, default=0.2,
+    p.add_argument("--no-runups", dest="runups", action="store_false",
+                   help="skip the scripted run-up practice starts (RUNUPS)")
+    p.add_argument("--explorers", type=float, default=0.1,
                    help="with --mutation gentle: share of offspring mutated with the strong neat.cfg settings")
     p.add_argument("--seeds", type=int, default=7,
                    help="protected seeds: the furthest stepping-stone niche in each lane of the newest road, "
@@ -355,6 +378,14 @@ def main():
             # the ending: once a pilot can carry others to a road's end, everyone also starts 12 and
             # 6 rows before it. These count like whole roads (keys >= END_KEY rank as roads), so
             # entering the final tunnel matters as much as getting through a road.
+            if a.runups and road == roads[-1] and road in RUNUPS:
+                pinned = state.setdefault("runup_carriers", {})
+                if road not in pinned and road in state["carriers"]:
+                    pinned[road] = copy.deepcopy(state["carriers"][road])
+                if road in pinned:
+                    for j, (row, plan) in enumerate(RUNUPS[road]):
+                        jobs.append((RUNUP_KEY - road * 10 - j, road, row, 17 + gen * 1021 + road * 79 + j,
+                                     dict(plan, carrier=pinned[road])))
             reach = state["reach"].get(road)
             if a.end_practice and reach is not None and reach >= lengths[road] - 1.5:
                 for j, back in enumerate((12, 6)):
