@@ -53,8 +53,12 @@ _W = {}
 # Mutation test (gen 1241, 4 pilots finishing Roads 1 and 2, 60 offspring each): with the neat.cfg
 # settings only 8% of mutated copies still finished both roads (2% after crossover with a species-mate),
 # so finishers survived as elites but never multiplied. With these settings 96% did.
-GENTLE = {"weight_mutate_rate": 0.1, "weight_mutate_power": 0.1, "weight_replace_rate": 0.0,
-          "bias_mutate_rate": 0.1, "bias_mutate_power": 0.1, "bias_replace_rate": 0.0,
+# The rates were 10% at first. By gen 4810 the pilots that keep Roads 1-4 had grown to 279 links, so 10%
+# meant ~28 weight changes per child, and 0 of 120 children kept Road 2: the line had lived on as an
+# elite only, for ~1,300 generations. Changing 1 weight kept Roads 1-4 in 35/40 children, 3 in 26/40,
+# 10 in 4/40, and 28 in 1/40 even when each change was only 0.01. So the rates are now 1%.
+GENTLE = {"weight_mutate_rate": 0.01, "weight_mutate_power": 0.1, "weight_replace_rate": 0.0,
+          "bias_mutate_rate": 0.01, "bias_mutate_power": 0.1, "bias_replace_rate": 0.0,
           "conn_add_prob": 0.05, "conn_delete_prob": 0.02, "node_add_prob": 0.02, "node_delete_prob": 0.0,
           "enabled_mutate_rate": 0.0}
 
@@ -221,6 +225,8 @@ def main():
     p.add_argument("--unlock-share", type=float, default=0.5,
                    help="share of the top 20 pilots that must finish every current road on every flight")
     p.add_argument("--target-species", type=int, default=12)
+    p.add_argument("--no-stuck-practice", dest="stuck_practice", action="store_false",
+                   help="skip the practice starts before each spot where the best pilot crashes on the newest road")
     a = p.parse_args()
     os.makedirs(a.out, exist_ok=True)
     below_normal()
@@ -288,7 +294,35 @@ def main():
             # which the start at reach - 3 (row 49) left no room for
             if int(reach) - 9 > 4:
                 rows.add(int(reach) - 9)
+        if road == state["roads"][-1]:
+            for spot in state.get("stuck", {}).get(road, []):
+                rows.update(r for r in (spot - 3, spot - 9) if r >= 4)
         return sorted(rows)
+
+    # Practice before each spot where the best pilot crashes on the newest road. Once some pilot finishes
+    # the newest road, the evenly spaced starts stop following the frontier. On Road 5 the pilots that
+    # keep Roads 1-4 crashed at rows 50, 68, 86 and 118, while the starts were at 4, 40, 77 and 114: no
+    # start before row 68, and crossing them with the Road 5 finishers (a different line) gave 0 of 300
+    # children that finished any road. The sweep hands the best pilot over from the furthest pilot at
+    # every few rows and records where it crashes, so each spot can be practised on its own.
+    def find_stuck(road, champ_g, cfg, play):
+        if road not in state["carriers"] or state["reach"].get(road, 0) < lengths[road] - 1.5:
+            return []
+        from starlane.portenv import PortEnv
+        env = PortEnv()
+        net = neat.nn.FeedForwardNetwork.create(champ_g, cfg)
+        carrier = neat.nn.FeedForwardNetwork.create(state["carriers"][road], cfg)
+        crashes = set()
+        for h in [None] + list(range(5, lengths[road] - 3, 3)):
+            r = env.fly(net, road, carrier=None if h is None else carrier, handover_row=h,
+                        frame_ticks=play["frame_ticks"], jump=play["jump"])
+            if not r["won"]:
+                crashes.add(int(r["row"]))
+        spots = []
+        for c in sorted(crashes):                  # one spot per cluster of crash rows
+            if not spots or c - spots[-1] > 3:
+                spots.append(c)
+        return spots
 
     lengths = {}
 
@@ -489,6 +523,14 @@ def main():
             with open(os.path.join(a.out, "best.pkl"), "wb") as f:
                 pickle.dump(blob, f)
 
+        stuck = state.setdefault("stuck", {})
+        if a.stuck_practice and (gen % 10 == 0 or newest not in stuck):
+            spots = find_stuck(newest, champ_g, cfg, play)
+            if spots != stuck.get(newest):
+                print(f"       best pilot crashes on R{newest + 1} at rows {spots}: practice starts 3 and 9 "
+                      f"rows before each", flush=True)
+            stuck[newest] = spots
+
         # one road at a time: the next road is added once at least a.unlock_share of the top 20 pilots
         # finish every current road on every flight, in a.unlock_after generations running (one lucky
         # champion isn't enough: that skill was lost again as soon as the next road came in)
@@ -499,6 +541,7 @@ def main():
         if state["streak"] >= a.unlock_after and max(roads) < ROADS - 1:
             roads.append(max(roads) + 1)
             state["best"], state["streak"], state["frontier"], state["niches"] = -1.0, 0, [], {}
+            state.get("stuck", {}).clear()
             print(f"       -> road {roads[-1] + 1} added", flush=True)
 
         # steer the species count towards the target: a step in proportion to how far off it is
