@@ -6,8 +6,7 @@ wanted to see if an evolutionary algorithm could learn to play it, the same way 
 Super Mario World. There is no gradient descent and no training on human play. The pilots that fly the furthest
 get to breed, and mutation and crossover take care of the rest.
 
-I worked on this over four days, from 10 to 13 November 2026. Claude Code wrote most of the code while I directed
-it, tested it and decided what to try next. This write-up goes through the approach, what went wrong, what fixed
+Claude Code wrote most of the code while I directed it, tested it and decided what to try next. This write-up goes through the approach, what went wrong, what fixed
 it and where it stands now.
 
 ## Goal
@@ -23,10 +22,10 @@ decided not to recreate the real levels inside a custom simulator.
 Each pilot is a NEAT network, using the neat-python library. A network starts very small, with a few random links
 from the inputs to the outputs and no hidden neurons. NEAT adds links and neurons over time as they help.
 
-The pilot gets 165 inputs. Most of them are a grid of the road ahead: 13 lanes centred on the ship by 11 distance
-bands, covering every row up to 20 rows ahead. Each cell is a hole, road, tunnel or block. On top of that, the pilot
-gets how far ahead each lane stays clear, its position and speed, its height above the road, the road's gravity, and
-how close the end of the road is.
+The pilot started with 165 inputs. Most of them are a grid of the road ahead: 13 lanes centred on the ship by 11
+distance bands, covering every row up to 20 rows ahead. Each cell is a hole, road, tunnel or block. On top of that, the
+pilot gets how far ahead each lane stays clear, its position and speed, its height above the road, the road's gravity,
+and how close the end of the road is. Later in the project this grew to 222 inputs, which I go through further down.
 
 There are 3 outputs: steer, throttle and jump. Steering is proportional, so the size of the output decides how often
 the key is held down. This lets the pilot make small corrections on narrow parts of the road.
@@ -246,15 +245,57 @@ finished it in every generation since.
 
 ![The latest best pilot on Road 4](media/06_road4.gif)
 
+At generation 3110, the top pilots were finishing all four roads, and Road 5 unlocked at generation 3149.
+
+## Road 5 and Checking Every Input
+
+On Road 5, the furthest pilot got to 91% and stayed there. The best pilot overall only reached 38%.
+I replayed the pilots and found two places where they were going wrong.
+
+The first was around row 50. The pilots were riding on top of a row of low blocks in lane 1, which works for a while,
+and then they hit a tall block. When I scripted a jump from the low blocks onto the tall block, the ship got past it and
+through a wall at row 55 in 304 out of 768 tries, but those runs crashed again around row 64. The second was around row
+114. The pilots were driving through a row of arches in lane 5 and then jumping off the road at row 111. In a scripted
+test, simply staying in lane 5 finished Road 5 in 3 out of 3 tries. So the pilots were close, but they did not
+understand what they were looking at.
+
+At this point I went through every tile and object in the port's game code and tested each one on short test roads
+written into the port's memory, without touching the game files. This turned up a few things my inputs had wrong.
+Arches can be driven under, but my inputs counted them as blocked. Tunnels can be driven through, and their roof is
+curved, so a ship that lands on the roof off centre slides off, while an arch has a flat roof. A tunnel can also lead
+into a wall or a hole, so going in does not mean coming out. Blocks come in two heights. A tall block cannot be jumped
+onto from the road, but it can be reached from the top of a low block. The special tiles also checked out. The speed
+tile takes the ship to top speed, the brake tile slows it down until it stops, the slippery tile stops it from
+steering, the supplies tile refills fuel and oxygen, and the fire tile explodes it, even on top of a block. Hitting a
+wall at low speed is only a bump. At top speed, the ship clears a gap of 1 or 2 rows easily, 3 rows only if it jumps
+from the very last part of the road, and 4 rows not at all.
+
+My first try fixed the old inputs in place, and it broke the pilots again. Every one of the 13 pilots that finished Roads 1 to 4 failed
+after the change. So I did the same thing as with the jump aware inputs and added the corrected version as new inputs
+next to the old ones. The pilots now also get the special tiles ahead in the 5 nearest lanes, what the ship is standing
+on (the road, a block top, a tunnel roof, a slippery tile or a brake tile), and how much fuel and oxygen is left. In
+total this took the inputs from 180 to 222, and every new input starts with zero weight.
+
+For a long time nothing changed. Then, about 340 generations after the new inputs were added, at generation 3742, a
+pilot finished Road 5 from the start for the first time. Since then, 1 to 4 pilots have finished it in almost every
+generation. Road 4 also got stronger, from about 7 finishers per generation to between 15 and 43.
+
+![The furthest pilot on Road 5 finishing it from the start](media/07_road5_finish.gif)
+
+However, none of the pilots that finish Road 5 also finish the older roads. The pilot in the recording above finishes
+Road 5 and reaches 99% of Road 1, but it only reaches 2% of Road 2. Road 5 is now a matter of combining two groups of
+pilots, the ones that keep the old roads and the ones that know Road 5.
+
 ## Where It Stands
 
-At generation 3,104, the pilots have reached the goal I set at the start: one pilot that finishes Roads 1, 2 and 3. Road
-4 is close behind. The best pilot finishes Roads 1 to 3 and reaches 99% of Road 4, and about 11 pilots finish Road 4 every
-generation. Road 2 is still the weakest of the learned roads, with about 20 to 45 finishers per generation, but the best
-pilots keep it. A generation of 500 pilots, each flying 23 times, takes about 14 seconds.
+At generation 4371, the pilots have passed the goal I set at the start, which was one pilot that finishes Roads 1, 2
+and 3. The best pilot finishes Roads 1 to 4 and reaches 38% of Road 5, and a few other pilots finish Road 5 on their
+own. Road 6 will unlock once half of the top 20 pilots finish all five roads. Road 2 is the weakest of the learned roads,
+with only 2 to 8 finishers per generation, and Road 3 has dropped from about 40 to between 8 and 24. A generation of 500
+pilots, each flying 35 times, takes about 30 seconds.
 
-All of the recordings above are made with `record_progress.py`, which picks a pilot from a checkpoint and flies it in the
-port with its own renderer.
+All of the recordings above are made with `record_progress.py`, which picks a pilot from a checkpoint or the training
+state and flies it in the port with its own renderer.
 
 ## Conclusion
 
@@ -280,21 +321,25 @@ Some lessons from this project:
 - Start practice where the population gets stuck, and leave enough room before the obstacle.
 - When the pilots are stuck, check if the move is possible at all. A scripted test answered that in a few minutes.
 - Check what the inputs are telling the pilots at the stuck spot. Mine were pointing them into a dead end.
+- Test every tile and object in the game against what the inputs say. Mine had arches as walls for most of the project.
+- Add new inputs next to the old ones instead of fixing them in place. Changing an input that trained pilots rely on
+  breaks them, even when the change is correct.
 - Be careful with bonuses that are averaged. A bonus that worked for one road got weaker as more roads were added.
 - Profile before guessing. My first guess at the slowdown was wrong, and caching the right part made training 4 times
   faster.
 - Save checkpoints often. Being able to roll back saved the run more than once.
 
-Next, I want to let it keep going through Road 4 and beyond, and see how far one pilot can get. I also want to try
-breeding the seeds with the pilots that already finish the old roads, since two finishers bred together kept the skill
-45% of the time. Other ideas are separate pilots for each road that can help when the main run gets stuck, turning the
+Next, I want to let it keep going through Road 5 and beyond, and see how far one pilot can get. I also want to try
+breeding the Road 5 finishers with the pilots that already finish the old roads, since two finishers bred together kept
+the skill 45% of the time. Other ideas are separate pilots for each road that can help when the main run gets stuck, turning the
 DOSBox timing back on once the roads are learned, and novelty search for the hardest spots.
 
 There are some limitations. One pilot has to remember every earlier road while it learns the next one, and the bonuses
 and seeds that make this work were tuned by hand. The scripted run ups on Road 3 are also my own design, even though they
 only decide where practice starts. Training in the port no longer matches the DOSBox timing, so results
-on the real game are mixed. Roads 4 to 30 have not been tried yet. Road 20 has so much gravity that jumping is not
-possible, and fuel and oxygen have not been mapped.
+on the real game are mixed. Roads 6 to 30 have not been tried yet, and Road 20 has so much gravity that jumping is not
+possible. The pilots now see their fuel and oxygen, but in recent generations no flight has run out of either, so
+that part is untested.
 
 ## Repo Layout
 

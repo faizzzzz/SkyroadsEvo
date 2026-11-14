@@ -25,7 +25,8 @@ CFG = config_from_text(open(os.path.join(HERE, "runs", "port", "neat.cfg")).read
 FLY = dict(jump="hold", frame_ticks=1.0)
 
 # (file name, caption, source, road (0-based), how to pick the pilot)
-#   source: a checkpoint generation number in runs/port, or a pilot file
+#   source: a checkpoint generation number in runs/port, a pilot file, or "carrier" (the furthest
+#           pilot ever on that road, from runs/port/state.pkl)
 #   pick: "furthest" (most progress), "finisher" (finishes this road, preferring pilots that also
 #         finish the earlier roads), "best" (the pilot as saved)
 CLIPS = [
@@ -35,6 +36,7 @@ CLIPS = [
     ("04_road3_wall.gif", "Road 3: all 500 pilots hit this block", 1300, 2, "furthest"),
     ("05_road3_finish.gif", "Gen 3050: Road 3 finished", "latest", 2, "finisher"),
     ("06_road4.gif", "Road 4: latest best pilot", os.path.join("runs", "port", "latest_best.pkl"), 3, "best"),
+    ("07_road5_finish.gif", "Road 5 finished from the start", "carrier", 4, "best"),
 ]
 
 
@@ -47,8 +49,12 @@ def checkpoint(gen):
 
 
 def pick(source, road, how, env):
+    """Returns (genome, seed, note)."""
     if isinstance(source, str) and source.endswith(".pkl"):
-        return pickle.load(open(os.path.join(HERE, source), "rb"))["genome"], "saved pilot"
+        return pickle.load(open(os.path.join(HERE, source), "rb"))["genome"], 0, "saved pilot"
+    if source == "carrier":          # the pilot that got furthest ever on this road (training state)
+        state = pickle.load(open(os.path.join(HERE, "runs", "port", "state.pkl"), "rb"))
+        return state["carriers"][road], 0, "carrier"
     path = checkpoint(source)
     genomes = list(neat.Checkpointer.restore_checkpoint(path).population.values())
     scored = []
@@ -58,10 +64,10 @@ def pick(source, road, how, env):
         earlier = sum(env.fly(net, rd, **FLY)["won"] for rd in range(road)) if how == "finisher" and r["won"] else 0
         scored.append(((r["won"], earlier, r["progress"]), g))
     key, g = max(scored, key=lambda kg: kg[0])
-    return g, f"{os.path.basename(path)}, {key}"
+    return g, 0, f"{os.path.basename(path)}, {key}"
 
 
-def record(genome, road, caption, path):
+def record(genome, road, caption, path, seed=0):
     env = PortEnv(dll=os.path.join(HERE, "ext", "skyenv", "skyenv_draw.dll"))
     rgb = np.zeros((200, 320, 3), np.uint8)
     frames = []
@@ -74,7 +80,7 @@ def record(genome, road, caption, path):
             cv2.putText(img, caption, (4, 10), cv2.FONT_HERSHEY_PLAIN, 0.75, (255, 255, 255), 1, cv2.LINE_AA)
             frames.append(img)
 
-    r = env.fly(neat.nn.FeedForwardNetwork.create(genome, CFG), road, on_frame=on_frame, **FLY)
+    r = env.fly(neat.nn.FeedForwardNetwork.create(genome, CFG), road, on_frame=on_frame, seed=seed, **FLY)
     for _ in range(18):                      # hold the last frame for 1.5 s
         frames.append(frames[-1])
     anim = cv2.Animation()
@@ -92,8 +98,8 @@ def main():
     for name, caption, source, road, how in CLIPS:
         if only and name not in only:
             continue
-        genome, note = pick(source, road, how, env)
-        r = record(genome, road, caption, os.path.join(OUT, name))
+        genome, seed, note = pick(source, road, how, env)
+        r = record(genome, road, caption, os.path.join(OUT, name), seed)
         size = os.path.getsize(os.path.join(OUT, name)) / 1e6
         print(f"{name}: {note} -> {r['progress']:.0%} {r['why']}  ({size:.1f} MB)", flush=True)
 
