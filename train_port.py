@@ -198,7 +198,7 @@ def main():
     p.add_argument("--unlock-after", type=int, default=5,
                    help="generations in a row the top pilots must finish every current road before the next is added")
     p.add_argument("--keep-weight", type=float, default=600.0,
-                   help="fitness bonus for finishing every flight on already-mastered roads (pro rata)")
+                   help="fitness bonus for each already-mastered road, times the share of its flights finished")
     p.add_argument("--win-weight", type=float, default=400.0,
                    help="fitness bonus for finishing the newest road (ranks alone barely separate a "
                         "finish from falling off at 99%%)")
@@ -418,10 +418,13 @@ def main():
         # that outranked everything (5000), pilots that cleared Road 2's first gap but missed one Road 1
         # finish were always dropped; at --keep-weight 600, losing Road 1 entirely still costs more than
         # anything the new road can give, but one missed finish (150) can be outweighed by real progress.
+        # The bonus is per mastered road, not an average over them: averaged, losing one of two old roads
+        # cost only 300, less than the 400 for finishing the newest road, and Road 2 finishers fell from
+        # ~150 to 9 per generation while pilots learned Road 3 (gens 2569-2682).
         mastered = roads[:-1]
         if mastered:
             for gid in fits:
-                kept = sum(res[gid][rd]["won"] for rd in mastered) / len(mastered)
+                kept = sum(res[gid][rd]["won"] for rd in mastered)
                 fits[gid] += a.keep_weight * kept
         # the newest road: finishing it must clearly beat getting 99% of the way. With ranks alone,
         # Road 2 finishers (1-13 of 500 per generation, gens 774-1409) never took over and died out.
