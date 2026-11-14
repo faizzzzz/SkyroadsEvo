@@ -139,12 +139,13 @@ def _work(args):
     return out
 
 
-INPUTS = 180                    # starlane/realobs.build_obs
+INPUTS = 222                    # starlane/realobs.build_obs
 
 
 def widen_inputs(pop, cfg_text, path):
     """Give an existing population the inputs added since it was made (163 -> 165: the road's end;
-    165 -> 180: the jump-aware clear path),
+    165 -> 180: the jump-aware clear path; 180 -> 195: the same with cell types read correctly;
+    195 -> 222: special tiles ahead, what the ship stands on, fuel and oxygen),
     each connected to every output at zero strength so evolution can start tuning them at once."""
     gc = pop.config.genome_config
     have = gc.num_inputs

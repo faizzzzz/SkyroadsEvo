@@ -193,7 +193,8 @@ class PortEnv:
                 m["stalled"] = True                # 1.5 s without moving on (5 s at the start)
                 return K_ESC
             speed = s.vx * DOSBOX_SPEED_FULL / MAX_SPEED
-            obs = build_obs(cells[row:row + OBS_ROWS], s.y, s.z, speed, grav_in)
+            obs = build_obs(cells[row:row + OBS_ROWS], s.y, s.z, speed, grav_in,
+                            s.fuel / 30000.0, s.oxy / 30000.0)
             out = (net if m["handed"] else carrier).activate(obs)
             steer = steering(out[0])
             thr = 1 if out[1] > 0.33 else (-1 if out[1] < -0.33 else 0)
