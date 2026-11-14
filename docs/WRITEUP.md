@@ -132,6 +132,12 @@ taught them that, and that run learned Road 1, including real finishes in DOSBox
 hard to learn. Once I stopped caring about matching the DOSBox timing exactly, I went back to the game's own held jump,
 exact timing and a decision every frame, and the pilots learned much faster.
 
+![Generation 20 reaches the end of Road 1 but hops over the final tunnel](media/01_road1_gen20.gif)
+![Generation 100 drives into the final tunnel and finishes Road 1](media/02_road1_gen100.gif)
+
+At generation 20, the best pilot already reached the end of Road 1, but it hopped over the final tunnel
+and fell. By generation 100, pilots were driving into the tunnel and finishing the road.
+
 Adding Road 2 caused the pilots to forget Road 1, and finishes dropped from about 400 to about 10 over 38 generations. A
 bonus for finishing old roads fixed this. When the bonus was 5000, it blocked pilots that were making progress on Road 2.
 At 600, losing Road 1 completely costs more than anything Road 2 can give, but one missed finish can still be made up.
@@ -156,8 +162,15 @@ As observed in the results above, the finishers were surviving, but almost none 
 switched to gentle mutation and bred 75% of the children from a single parent. Road 2 finishers went from 6 to 79 within
 5 generations, and Road 3 unlocked at generation 1265. Later, about 470 out of 500 pilots were finishing Road 2.
 
+![A pilot from generation 800 finishing Road 2](media/03_road2_gen800.gif)
+
 Gentle mutation also made the pilots almost identical to each other. All 500 of them hit the same block early on Road 3,
-at row 10 or about 12%, for 155 generations. To bring back variety, I added explorers, which are 20% of the children
+at row 10 or about 12%, for 155 generations.
+
+![Every pilot drifted into the same block on Road 3](media/04_road3_wall.gif)
+
+The pilot jumps the gap fine, but it keeps steering while in the air and drifts into the block on the side.
+To bring back variety, I added explorers, which are 20% of the children
 mutated with the old, stronger settings. One of them got past the block right away, but it had lost Roads 1 and 2 along
 the way, so it ranked near the bottom and died out. The explorers also created a lot of species, from 2 to 105, and NEAT
 does not merge species on its own, so the trainer now sorts everyone into species again when the count gets too high.
@@ -175,14 +188,73 @@ To fix this, I used stepping stones, which is the idea behind MAP-Elites. Every 
 stood on, by row and lane. Each spot keeps the best pilot that got there, and the furthest spot in each lane is planted
 back into the population every generation. A pilot that reaches the middle lanes and then falls is now kept, and its
 children only have to learn the second jump. Within 70 generations, the stepping stone in lane 2 moved from row 44 to row
-49, and pilots reached the right side of the road for the first time.
+49, and pilots reached the right side of the road for the first time. However, after another 100 generations, no pilot
+had landed on the middle lanes.
+
+## Is the Crossing Even Possible?
+
+Before changing anything else, I wanted to know if the crossing could be done at all. I took a pilot that rides the left
+lane, let it fly to row 40, and then took over with scripted key presses. I tried every combination of jump timing,
+steering and throttle. Out of 10,512 attempts, 4,212 finished Road 3. The move is to jump at about row 43 while steering
+right, land on the middle lanes around row 46, and then jump again steering hard right onto the far right strip. The
+timing is forgiving, so the problem was not the game or the physics. Evolution just could not find it.
+
+Next, I added two practice starts past the crossing, one on the middle lanes at row 47 and one over the far right strip
+at row 50. A scripted run up takes the ship there, and the pilot flies by itself from that point. This only decides
+where practice starts, so the pilots still learn everything through evolution. Interestingly, the best pilot already
+finished Road 3 from both of these starts. It knew how to do the second jump and enter the tunnel. The only thing it was
+missing was the first jump. I also cut the explorers down to 10%, because Roads 1 and 2 were slipping.
+
+## The Inputs Were Pointing the Wrong Way
+
+Even with the practice starts, no pilot made the first jump. Looking at the inputs at row 43 explained why. The clear
+path inputs treat a hole as blocked right away. At row 43, the middle lanes start with 3 rows of holes, so they read as
+blocked, while the left lane reads as clear for 6 more rows. The pilots were following their inputs straight into the
+dead end. Even the far right strip, which is the only way to the end, reads as blocked because it is made of low blocks.
+
+I made the clear path jump aware. A hole of up to 3 rows counts as passable if road follows it, and low blocks count as
+platforms to land on. With this, the far right strip reads as the longest clear path at row 43. My first version
+replaced the old inputs, but that confused the existing pilots. In a test of 150 pilots, Road 1 finishes dropped from 43
+to 16 and Road 2 from 24 to 1. So I added the jump aware version as 15 new inputs instead, and kept the old ones as they
+were. The new inputs start with zero weights, so nothing changes until evolution starts using them.
+
+The new inputs also slowed training down, from about 35 to about 55 seconds per generation. Profiling showed that about
+three quarters of the time went into building the inputs on every frame. The road ahead only changes when the ship moves
+to a new row or lane, so I cached that part. Generations went down to about 13.5 seconds, about 4 times faster than
+before, with exactly the same results.
+
+## Breaking Through Road 3
+
+About 50 generations after the new inputs and the speed up, a pilot made the crossing on a full flight by itself and
+reached 94% of Road 3. The stepping stones kept it, and its line slowly won back Roads 1 and 2. At generation 2428, the
+best overall pilot went from 12% to 86% of Road 3 while still finishing Roads 1 and 2. At generation 2569, pilots started
+finishing Road 3 on full flights, about 70 of them every generation.
+
+![A pilot from generation 3050 crossing to the far right strip and finishing Road 3](media/05_road3_finish.gif)
+
+However, Road 2 started falling apart. Road 2 finishers dropped from about 150 to 9 per generation, and the best pilot
+was giving up Road 2 to finish Road 3. This was a mistake in my bonus for old roads. The bonus was 600 times the average
+share of old roads finished. With only Road 1 as an old road, losing it cost the full 600. With two old roads, losing
+Road 2 only cost 300, which is less than the 400 bonus for finishing the newest road. So dropping Road 2 for Road 3 was a
+good trade for the pilots. I changed the bonus to 600 for each old road, so losing Road 2 costs more than finishing Road 3
+gives.
+
+After that, the pieces came together. At generation 3049, the first pilot finished Roads 1, 2 and 3. Within 5
+generations, more than half of the top 20 pilots were finishing all three every time, and Road 4 unlocked at generation
+3055. Road 4 went much faster than Road 3. A pilot reached its end in the very first generation, and pilots have
+finished it in every generation since.
+
+![The latest best pilot on Road 4](media/06_road4.gif)
 
 ## Where It Stands
 
-At generation 1,870, Roads 1 and 2 are learned. About 270 to 490 out of 500 pilots finish Road 1 every generation, up to
-about 470 finish Road 2, and the best pilot always finishes both. On Road 3, the best overall pilot still stops at row 10,
-but the furthest pilot reaches row 52 out of 60, and the stepping stones are getting closer to the crossing. A
-generation of 500 pilots, each flying 21 times, takes about 30 seconds.
+At generation 3,104, the pilots have reached the goal I set at the start: one pilot that finishes Roads 1, 2 and 3. Road
+4 is close behind. The best pilot finishes Roads 1 to 3 and reaches 99% of Road 4, and about 11 pilots finish Road 4 every
+generation. Road 2 is still the weakest of the learned roads, with about 20 to 45 finishers per generation, but the best
+pilots keep it. A generation of 500 pilots, each flying 23 times, takes about 14 seconds.
+
+All of the recordings above are made with `record_progress.py`, which picks a pilot from a checkpoint and flies it in the
+port with its own renderer.
 
 ## Conclusion
 
@@ -206,15 +278,21 @@ Some lessons from this project:
 - Scoring by distance alone does not work well when an obstacle takes more than one move. Protected seeds and stepping
   stones keep the pilots that are halfway there.
 - Start practice where the population gets stuck, and leave enough room before the obstacle.
+- When the pilots are stuck, check if the move is possible at all. A scripted test answered that in a few minutes.
+- Check what the inputs are telling the pilots at the stuck spot. Mine were pointing them into a dead end.
+- Be careful with bonuses that are averaged. A bonus that worked for one road got weaker as more roads were added.
+- Profile before guessing. My first guess at the slowdown was wrong, and caching the right part made training 4 times
+  faster.
 - Save checkpoints often. Being able to roll back saved the run more than once.
 
-Next, I want to let the stepping stones get through Road 3 and see if they can win back Roads 1 and 2 and unlock Road 4.
-I also want to try breeding the seeds with the pilots that already finish the old roads, since two finishers bred
-together kept the skill 45% of the time. Other ideas are separate pilots for each road that can help when the main run
-gets stuck, turning the DOSBox timing back on once the roads are learned, and novelty search for the hardest spots.
+Next, I want to let it keep going through Road 4 and beyond, and see how far one pilot can get. I also want to try
+breeding the seeds with the pilots that already finish the old roads, since two finishers bred together kept the skill
+45% of the time. Other ideas are separate pilots for each road that can help when the main run gets stuck, turning the
+DOSBox timing back on once the roads are learned, and novelty search for the hardest spots.
 
 There are some limitations. One pilot has to remember every earlier road while it learns the next one, and the bonuses
-and seeds that make this work were tuned by hand. Training in the port no longer matches the DOSBox timing, so results
+and seeds that make this work were tuned by hand. The scripted run ups on Road 3 are also my own design, even though they
+only decide where practice starts. Training in the port no longer matches the DOSBox timing, so results
 on the real game are mixed. Roads 4 to 30 have not been tried yet. Road 20 has so much gravity that jumping is not
 possible, and fuel and oxygen have not been mapped.
 
@@ -228,3 +306,4 @@ possible, and fuel and oxygen have not been mapped.
 - `train_real.py`, `train_realsim.py` - training in DOSBox and in the matched simulator
 - `train_port.py`, `train_forever.ps1` - training in the port, and a script that restarts it if it crashes
 - `watch_side_by_side.py`, `check_transfer.py` - the side by side viewer, and an hourly check on the real game
+- `record_progress.py` - records the GIFs in `docs/media/` from training checkpoints
