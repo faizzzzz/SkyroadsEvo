@@ -26,6 +26,15 @@ LOW_BLOCK_CLEAR = 2600         # height above road level that clears a low block
 TUNNEL_CODE = 0.5              # a tunnel in the grid: not floor, not a block
 REFERENCE_JUMP = 5195          # peak jump height above road level at the standard gravity
 SHIP_HALF_WIDTH = 14.5 / 46    # the ship is 29 pixels wide
+# Clear-path inputs treat a hole this many rows long or shorter as passable when road follows it,
+# since a jump covers it (about 3 rows at top speed and standard gravity). Before this, a hole counted
+# as blocked at once, so at Road 3's row 43 the lanes the road continues on (holes for 3 rows, then
+# road) read as blocked and the dead-end lane as the longest clear path: the inputs pointed pilots
+# away from the only way on. 0 restores the old behaviour.
+JUMP_GAP_ROWS = 3
+# Clear-path inputs treat low blocks as part of the way on (the ship can jump onto them and ride on top),
+# like tunnels. Road 3 continues past row 49 only along a strip of low blocks on the far right.
+LOW_BLOCK_PLATFORM = True
 
 
 def lane_position(x: float) -> float:
@@ -107,30 +116,75 @@ def road_end_inputs(raw: np.ndarray, lane_x: float):
     return 1.0 - last / len(raw), float(np.clip((target - lane_x) / 2.0, -1.0, 1.0))
 
 
+def jump_aware(blocked: np.ndarray, hole: np.ndarray, gap: int = None) -> np.ndarray:
+    """blocked, hole: (rows, lanes). Clears hole runs of at most `gap` rows that end on a cell the
+    ship can drive on, so the clear-path inputs count a jumpable gap as part of the way on."""
+    gap = JUMP_GAP_ROWS if gap is None else gap
+    if gap <= 0:
+        return blocked
+    rows = hole.shape[0]
+    idx = np.arange(rows)[:, None]
+    # for every cell, the first non-hole row at or after it and the last one at or before it
+    after = np.minimum.accumulate(np.where(hole, rows, idx)[::-1], axis=0)[::-1]
+    before = np.maximum.accumulate(np.where(hole, -1, idx), axis=0)
+    landing = np.take_along_axis(blocked, np.minimum(after, rows - 1), axis=0)
+    jumpable = hole & (after - before - 1 <= gap) & (after < rows) & ~landing
+    return blocked & ~jumpable
+
+
+_ROAD_CACHE = {}
+_ROAD_CACHE_MAX = 200_000
+
+
 def build_obs(raw: np.ndarray, x: float, y: float, speed: float, gravity: float) -> list:
     """raw: (OBS_ROWS, 7) uint16 cells, starting at the ship's current row.
-    x, y, speed in the game's units. Returns the 165-number input list (the last two: road_end_inputs)."""
+    x, y, speed in the game's units. Returns the 180-number input list: road grid (143), clear path (15),
+    ship state (5), road end (2), and the jump-aware clear path (15).
+
+    The road-derived parts depend only on the cells in view, the ship's lane and whether it is above
+    the low blocks, which stay the same for several frames in a row, so they are cached (building them
+    was about three quarters of a flight's run time)."""
     lane_x = lane_position(x)
     lane = int(np.clip(np.floor(lane_x), 0, C.LANES - 1))
+    high = y > GROUND + LOW_BLOCK_CLEAR
+    key = (raw.tobytes(), raw.shape[0], lane, high)
+    road = _ROAD_CACHE.get(key)
+    if road is None:
+        if len(_ROAD_CACHE) >= _ROAD_CACHE_MAX:
+            _ROAD_CACHE.clear()
+        road = _ROAD_CACHE[key] = _road_inputs(raw, lane, high)
+    centre = lane + 0.5
+    state = [(lane_x - centre) * 2, lane_x / C.LANES * 2 - 1, min(1.0, speed / SPEED_FULL),
+             float(np.clip((y - GROUND) / 6000.0, -1.0, 1.0)), gravity]
+    end = road_end_inputs(raw, lane_x)
+    return (road[0] + road[1] + np.array(state, np.float32).tolist()
+            + np.array(end, np.float32).tolist() + road[2])
+
+
+def _road_inputs(raw: np.ndarray, lane: int, high: bool) -> tuple:
+    """The parts of build_obs that depend only on the road: (grid bands, clear path, jump-aware
+    clear path), each a list of float32 values."""
     lo, hi = raw & 255, raw >> 8
     grid = np.full(raw.shape, -1.0, np.float32)            # empty cell: a hole
     grid[(hi == 0) & (lo > 0)] = 0.0                       # plain road
     grid[hi == CELL_TUNNEL] = TUNNEL_CODE                  # tunnels can be driven through
     grid[(hi != 0) & (hi != CELL_TUNNEL)] = 1.0            # blocks
     grid[(hi == 0) & (lo == TILE_DEADLY)] = 1.0            # deadly tiles are as bad as walls
-    if y > GROUND + LOW_BLOCK_CLEAR:
+    if high:
         grid[hi == CELL_LOW_BLOCK] = 0.0
         grid[(hi == 0) & (lo == TILE_DEADLY)] = 0.0        # ...unless flying over them
     code = np.full((OBS_ROWS, len(LOOK_LANES)), -1.0, np.float32)
     lanes = lane + LOOK_LANES.astype(int)
     inside = (lanes >= 0) & (lanes < C.LANES)
     code[:, inside] = grid[:, lanes[inside]]
-    centre = lane + 0.5
-    state = np.array([(lane_x - centre) * 2, lane_x / C.LANES * 2 - 1,
-                      min(1.0, speed / SPEED_FULL),
-                      float(np.clip((y - GROUND) / 6000.0, -1.0, 1.0)),
-                      gravity], np.float32)
     blocked = (code != 0) & (code != TUNNEL_CODE)
-    end = np.array(road_end_inputs(raw, lane_x), np.float32)
-    return np.concatenate([reduce_bands(code, axis=0).ravel(),
-                           clear_path_features(blocked), state, end]).astype(np.float32).tolist()
+    # the jump-aware clear path comes as 15 extra inputs at the end, so the original 165 keep their
+    # meaning: replacing them cut Road 1 finishes from 43 to 16 and Road 2 from 24 to 1 in 150 pilots
+    reach = blocked.copy()
+    if LOW_BLOCK_PLATFORM:
+        low = np.zeros(code.shape, bool)
+        low[:, inside] = (hi == CELL_LOW_BLOCK)[:, lanes[inside]]
+        reach &= ~low                                       # a platform to jump onto, not a wall
+    reach = jump_aware(reach, code == -1.0)
+    f32 = lambda a: np.asarray(a, np.float32).ravel().tolist()
+    return f32(reduce_bands(code, axis=0)), f32(clear_path_features(blocked)), f32(clear_path_features(reach))
